@@ -4,6 +4,8 @@ This repository contains R code files to run an environment-wide association stu
 
 Processed NHANES datasets used in this analysis are available at: https://www.kaggle.com/datasets/nguyenvy/nhanes-19882018
 
+ - Files needed: w - nhanes_1988_2018.RData, dictionary_nhanes.csv, chemicals_clean.csv, comments_clean.csv, weights_clean.csv
+
 Original NHANES datasets are available at: https://wwwn.cdc.gov/nchs/nhanes/continuousnhanes/default.aspx
 
 ## Citation
@@ -12,16 +14,16 @@ Original NHANES datasets are available at: https://wwwn.cdc.gov/nchs/nhanes/cont
 
 ## File descriptions
 
-1_Build_and_clean_dataset.Rmd - data cleaning, participant inclusion and exclusion
+1_Build_and_clean_dataset - data cleaning, participant inclusion and exclusion
 
-2_Multiple_imputation_cognition_ExWAS.Rmd - perform multiple imputation by chained equations
+2_Multiple_imputation_cognition_ExWAS - perform multiple imputation by chained equations
 
-3_Cognition_ExWAS_descriptive_tables_and_figures.Rmd - create descriptive tables
+3_Cognition_ExWAS_descriptive_tables - create descriptive tables
 
-4_Chemical_supplemental_figures.Rmd - create descriptive figures
+4_Chemical_supplemental_figures - create descriptive figures
 
-5_Cognition_ExWAS_models.Rmd - run generalized linear models
+5_Cognition_ExWAS_models - run generalized linear models
 
-6_Cognition_ExWAS_volcano_plots.Rmd - create volcano plots of results
+6_Cognition_ExWAS_volcano_plots - create volcano plots of results
 
-Cog_ExWAS_model_functions.R - functions necessary to run models in code 5
+Cog_ExWAS_model_functions - functions necessary to run models in code 5
