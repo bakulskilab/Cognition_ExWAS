@@ -1,6 +1,6 @@
-# Environmental chemical-wide association study of cognition among older adults in the National Health and Nutrition Examination Survey
+# Exposome-wide association study of cognition among older adults in the National Health and Nutrition Examination Survey
 
-This repository contains R code files to run an environment-wide association study (ExWAS) of cognition using public National Health and Nutrition Examination Survey (NHANES) data.
+This repository contains R code files to run an exposome-wide association study (ExWAS) of cognition using public National Health and Nutrition Examination Survey (NHANES) data.
 
 Processed NHANES datasets used in this analysis are available at: https://www.kaggle.com/datasets/nguyenvy/nhanes-19882018
 
