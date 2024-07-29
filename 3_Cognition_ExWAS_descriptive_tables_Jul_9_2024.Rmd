@@ -1,0 +1,633 @@
+---
+title: "Descriptive statistics tables: cognition ExWAS"
+author: "Erika Walker"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+Purpose: Create descriptive statistics tables (both survey weighted and unweighted) for cognition ExWAS analysis
+
+Presented demographic tables will be weighted, except for unweighted frequencies (ex: N missing; subgroup sample sizes)
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(gtsummary)
+library(flextable)
+library(tidyverse)
+library(sjlabelled)
+library(survey)
+library(gt)
+```
+
+# Load data 
+```{r}
+ewas_data <- readRDS('Data/cognition_ewas_svi_to_impute.RDS')
+# N = 29896 (3 full cycles)
+
+#summary(ewas_data)
+
+```
+
+# Descriptives by cycle
+Comparing cycles 1999-2000 vs 2011-2014
+Unweighted
+```{r}
+# create categories for the cycle periods for comparison and use the categorical var labels
+tbl1_data <- ewas_data %>%
+  mutate(cycles = ifelse(SDDSRVYR == 1, "1999-2000", "2011-2014")) %>%
+  as_label(RIAGENDR, RIDRETH1, hs_educ, smk_status, alc4) %>%
+  mutate(normal_kidney = case_when(VNEGFR >= 60 ~ 'eGFR >= 60',
+                                   VNEGFR < 60 ~ 'eGFR < 60')) %>%
+  mutate(total_seafood_grp = factor(total_seafood_grp,
+                                    labels = c('0 times',
+                                               '1-3 times',
+                                               '4+ times')))
+
+table(tbl1_data$total_seafood_grp)
+
+# generate table 1 unweighted descriptive statistics by cycle
+tbl_1 <- tbl1_data %>%
+  filter(include == 1) %>%
+  tbl_summary(by = 'cycles',
+              include = c(DSST, RIDAGEYR, RIAGENDR, RIDRETH1, hs_educ, smk_status, LBXCOT, alc4, 
+                          BMXWAIST, URXUCR, total_seafood_grp, normal_kidney),
+              label = c(DSST ~ 'Digit Symbol Substitution Test (DSST)',
+                        RIDAGEYR ~ 'Age (years)',
+                        RIAGENDR ~ 'Sex',
+                        RIDRETH1 ~ 'Race/ethnicity',
+                        hs_educ ~ 'Education',
+                        smk_status ~ 'Smoking status',
+                        LBXCOT ~ 'Serum cotinine (ng/mL)',
+                        alc4 ~ 'Alcohol consumption',
+                        BMXWAIST ~ 'Waist circumference (cm)',
+                        URXUCR ~ 'Urinary creatinine (mg/dL)',
+                        total_seafood_grp ~ 'Fish and seafood consumption in past 30 days',
+                        normal_kidney ~ 'Estimated glomerular filtration rate (eGFR; ml/min/1.73 m2)'),
+              missing_text = 'Missing',
+              statistic = list(all_continuous() ~ "{mean} ({sd})",
+                               all_categorical() ~ "{n} ({p}%)"),
+              digits = list(all_continuous() ~ c(2, 2),
+                            all_categorical() ~ c(0, 2))) %>%
+  add_overall() %>%
+  add_p(list(all_continuous() ~ 't.test',
+             all_categorical() ~ 'chisq.test')) %>%
+  bold_labels() %>%
+  modify_header(label = '**Variable**',
+                stat_0 = '**Overall (N = 4,982)**',
+                stat_1 = '**1999-2000 (N = 1,562)**',
+                stat_2 = '**2011-2014 (N = 3,420)**') %>%
+  modify_caption('Table 1. Unweighted descriptive statistics of participants aged 60+ in the National Health and Nutrition Examination Survey (NHANES), stratified by cycle of participation (N = 4,982).')
+
+tbl_1
+
+tbl_1 %>%
+  as_flex_table() %>%
+  save_as_docx(path = 'Output Cog ExWAS/Cog ExWAS unweighted descriptive stats by cycle May 31 2024.docx')
+
+```
+
+# Weighted descriptives by cycle
+```{r}
+# adjust weights
+tbl1_data <- tbl1_data %>%
+    mutate(adjusted_weights = (1/3)*WTMEC2YR)
+
+# create survey object
+tbl1_wt_data <- svydesign(ids = ~SDMVPSU, 
+                          strata = ~SDMVSTRA,
+                          weights = ~adjusted_weights,
+                          nest = TRUE,
+                          data = tbl1_data)
+
+# subset to included participants
+tbl1_wt_subset <- subset(tbl1_wt_data,
+                         include == 1)
+
+tbl_1_wt <- tbl_svysummary(data = tbl1_wt_subset, 
+            by = 'cycles', 
+            include = c(DSST, RIDAGEYR, RIAGENDR, RIDRETH1, hs_educ, smk_status, LBXCOT, alc4, 
+                          BMXWAIST, URXUCR, total_seafood_grp, normal_kidney),
+              label = c(DSST ~ 'Digit Symbol Substitution Test (DSST)',
+                        RIDAGEYR ~ 'Age (years)',
+                        RIAGENDR ~ 'Sex',
+                        RIDRETH1 ~ 'Race/ethnicity',
+                        hs_educ ~ 'Education',
+                        smk_status ~ 'Smoking status',
+                        LBXCOT ~ 'Serum cotinine (ng/mL)',
+                        alc4 ~ 'Alcohol consumption',
+                        BMXWAIST ~ 'Waist circumference (cm)',
+                        URXUCR ~ 'Urinary creatinine (mg/dL)',
+                        total_seafood_grp ~ 'Fish and seafood consumption in past 30 days',
+                        normal_kidney ~ 'Estimated glomerular filtration rate (eGFR; ml/min/1.73 m2)'),
+            missing_text = 'Missing',
+            statistic = list(all_continuous() ~ "{mean} ({sd})",
+                             all_categorical() ~ "{p}%"),
+            digits = list(all_continuous() ~ c(2, 2),
+                          all_categorical() ~ 2)) %>%
+  add_overall() %>%
+  add_p(list(all_continuous() ~ 'svy.t.test',
+             all_categorical() ~ 'svy.chisq.test')) %>%
+  bold_labels() %>%
+  modify_header(label = '**Variable**',
+                stat_0 = '**Overall (N = 4,982)**',
+                stat_1 = '**1999-2000 (N = 1,562)**',
+                stat_2 = '**2011-2014 (N = 3,420)**') %>%
+  modify_caption('Table 1. Weighted descriptive statistics of participants aged 60+ in the National Health and Nutrition Examination Survey (NHANES), stratified by cycle of participation (N = 4,982).')
+
+tbl_1_wt
+
+tbl_1_wt %>%
+  as_flex_table() %>%
+  save_as_docx(path = 'Output Cog ExWAS/Cog ExWAS weighted descriptive stats by cycle May 31 2024.docx')
+
+```
+
+
+# Descriptives by cognitive status
+Mild cognitive impairment dichotomized (cutoff = 25th pctl)
+25th pctl in imputed set: 29
+25th pctl in unimputed set: 31
+Going with 29 as cutoff so it matches the models using the imp dataset
+```{r}
+summary((ewas_data %>% filter(include == 1))$DSST) 
+
+#mci_cutoff <- as.numeric(summary((ewas_data %>% filter(include == 1))$DSST))[2]
+
+mci_cutoff <- 29
+
+tbl2_data <- ewas_data %>%
+  mutate(mci = ifelse(DSST < mci_cutoff, 'Mild cognitive impairment', 'No cognitive impairment')) %>%
+  as_label(RIAGENDR, RIDRETH1, hs_educ, smk_status, alc4, SDDSRVYR) %>%
+  mutate(normal_kidney = case_when(VNEGFR >= 60 ~ 'eGFR >= 60',
+                                   VNEGFR < 60 ~ 'eGFR < 60')) %>%
+  mutate(total_seafood_grp = factor(total_seafood_grp,
+                                    labels = c('0 times',
+                                               '1-3 times',
+                                               '4+ times')))
+
+table(tbl2_data$mci)
+
+# force NA to category for mci so it can show as a column
+tbl2_data <- tbl2_data %>%
+  mutate(mci = fct_na_value_to_level(mci,
+                                     level = 'Missing DSST score'))
+
+table(tbl2_data$mci)
+table((tbl2_data %>% filter(include == 1))$mci)
+
+tbl_2 <- tbl2_data %>%
+  filter(include == 1) %>%
+  tbl_summary(by = 'mci', 
+              include = c(DSST, RIDAGEYR, RIAGENDR, RIDRETH1, hs_educ, smk_status, LBXCOT, alc4, 
+                          BMXWAIST, URXUCR, total_seafood_grp, normal_kidney, SDDSRVYR),
+              label = c(DSST ~ 'Digit Symbol Substitution Test (DSST)',
+                        RIDAGEYR ~ 'Age (years)',
+                        RIAGENDR ~ 'Sex',
+                        RIDRETH1 ~ 'Race/ethnicity',
+                        hs_educ ~ 'Education',
+                        smk_status ~ 'Smoking status',
+                        LBXCOT ~ 'Serum cotinine (ng/mL)',
+                        alc4 ~ 'Alcohol consumption',
+                        BMXWAIST ~ 'Waist circumference (cm)',
+                        URXUCR ~ 'Urinary creatinine (mg/dL)',
+                        total_seafood_grp ~ 'Fish and seafood consumption in past 30 days',
+                        normal_kidney ~ 'Estimated glomerular filtration rate (eGFR; ml/min/1.73 m2)',
+                        SDDSRVYR ~ 'NHANES cycle'),
+            missing_text = 'Missing',
+            statistic = list(all_continuous() ~ "{mean} ({sd})",
+                             all_categorical() ~ "{n} ({p}%)"),
+            digits = list(all_continuous() ~ c(2, 2),
+                          all_categorical() ~ c(0, 2))) %>%
+  add_p(list(all_continuous() ~ 'aov',
+             all_categorical() ~ 'chisq.test')) %>%
+  bold_labels() %>%
+  modify_header(label = '**Variable**',
+                stat_1 = '**Mild cognitive impairment (N = 889)**',
+                stat_2 = '**No cognitive impairment (N = 3,372)**',
+                stat_3 = '**Missing DSST score (N = 721)**') %>%
+  modify_caption('Table 2. Unweighted descriptive statistics of participants aged 60+ in the National Health and Nutrition Examination Survey (NHANES) years 1999-2000 and 2011-2014, stratified by cognitive status determined via Digit Symbol Substitution Test (DSST) score (N = 4,982).')
+  
+tbl_2
+
+tbl_2 %>%
+  as_flex_table() %>%
+  save_as_docx(path = 'Output Cog ExWAS/Cog ExWAS unweighted descriptive stats by cognitive status May 31 2024.docx')
+
+```
+
+# Weighted descriptives by cognitive status
+```{r}
+# adjust weights
+tbl2_data <- tbl2_data %>%
+    mutate(adjusted_weights = (1/3)*WTMEC2YR)
+
+tbl2_wt_data <- svydesign(ids = ~SDMVPSU, 
+                          strata = ~SDMVSTRA,
+                          weights = ~adjusted_weights,
+                          nest = TRUE,
+                          data = tbl2_data)
+
+tbl2_wt_subset <- subset(tbl2_wt_data,
+                         include == 1)
+
+tbl_2_wt <- tbl_svysummary(data = tbl2_wt_subset, 
+            by = "mci", 
+            include = c(DSST, RIDAGEYR, RIAGENDR, RIDRETH1, hs_educ, smk_status, LBXCOT, alc4, 
+                          BMXWAIST, URXUCR, total_seafood_grp, normal_kidney, SDDSRVYR),
+              label = c(DSST ~ 'Digit Symbol Substitution Test (DSST)',
+                        RIDAGEYR ~ 'Age (years)',
+                        RIAGENDR ~ 'Sex',
+                        RIDRETH1 ~ 'Race/ethnicity',
+                        hs_educ ~ 'Education',
+                        smk_status ~ 'Smoking status',
+                        LBXCOT ~ 'Serum cotinine (ng/mL)',
+                        alc4 ~ 'Alcohol consumption',
+                        BMXWAIST ~ 'Waist circumference (cm)',
+                        URXUCR ~ 'Urinary creatinine (mg/dL)',
+                        total_seafood_grp ~ 'Fish and seafood consumption in past 30 days',
+                        normal_kidney ~ 'Estimated glomerular filtration rate (eGFR; ml/min/1.73 m2)',
+                        SDDSRVYR ~ 'NHANES cycle'),
+            missing_text = 'Missing',
+            statistic = list(all_continuous() ~ "{mean} ({sd})",
+                             all_categorical() ~ "{p}%"),
+            digits = list(all_continuous() ~ c(2, 2),
+                          all_categorical() ~ 2)) %>%
+  add_p(list(all_continuous() ~ 'svy.kruskal.test',
+             all_categorical() ~ 'svy.chisq.test')) %>%
+  bold_labels() %>%
+  modify_header(label = '**Variable**',
+                stat_1 = '**Mild cognitive impairment (N = 889)**',
+                stat_2 = '**No cognitive impairment (N = 3,372)**',
+                stat_3 = '**Missing DSST score (N = 721)**') %>%
+  modify_caption('Table 2. Weighted descriptive statistics of participants aged 60+ in the National Health and Nutrition Examination Survey (NHANES) years 1999-2000 and 2011-2014, stratified by cognitive status determined via Digit Symbol Substitution Test (DSST) score (N = 4,982).')
+  
+tbl_2_wt
+
+tbl_2_wt %>%
+  as_flex_table() %>%
+  save_as_docx(path = 'Output Cog ExWAS/Cog ExWAS weighted descriptive stats by cognitive status May 31 2024.docx')
+```
+
+# Chemical descriptives - weighted
+Now weighted, Jul 9
+```{r}
+chems <- read_csv('Data/chemicals_clean.csv', na = '.') %>%
+  filter(SDDSRVYR %in% c(1, 7, 8))
+
+weights <- read_csv('Data/weights_clean.csv', na = '.') %>%
+  filter(SDDSRVYR %in% c(1, 7, 8))
+
+dictionary <- read_csv('Data/use_these_chems.csv')
+
+chem_list <- dictionary$variable_codename_use
+
+wt_list <- paste0('WT_', chem_list)
+
+# also add weight list to dictionary
+dictionary$weight_variable <- paste0('WT_', dictionary$variable_codename_use)
+
+# reduce chems and weights files to included vars only and pivot
+chems_long <- chems %>%
+  select(SEQN, SDDSRVYR, all_of(chem_list)) %>%
+  pivot_longer(cols = all_of(chem_list),
+               names_to = 'chem_name',
+               values_to = 'chem_value')
+
+weights_long <- weights %>%
+  select(SEQN, SDDSRVYR, all_of(wt_list)) %>%
+  pivot_longer(cols = all_of(wt_list),
+               names_to = 'weight_name',
+               values_to = 'weight_value')
+
+# merge the long datasets
+chems_weights_long <- left_join(weights_long,
+                                dictionary,
+                                join_by(weight_name == weight_variable)) %>%
+  select(SEQN, SDDSRVYR, weight_name, weight_value, variable_codename_use) %>%
+  left_join(.,
+            chems_long,
+            join_by(SEQN == SEQN,
+                    SDDSRVYR == SDDSRVYR,
+                    variable_codename_use == chem_name)) %>%
+  rename(chem_name = variable_codename_use)
+
+# pull number of cycles per chem
+cycles <- chems_long %>%
+  drop_na(chem_value) %>%
+  group_by(chem_name) %>%
+  count(SDDSRVYR) %>%
+  group_by(chem_name) %>%
+  mutate(num_cycles = length(SDDSRVYR)) %>%
+  select(-n, -SDDSRVYR) %>%
+  unique()
+
+chems_weights_long <- left_join(chems_weights_long,
+                                cycles)
+
+# adjust weight
+chems_weights_long <- chems_weights_long %>%
+  mutate(weight_adj = (1/num_cycles)*weight_value)
+
+# add survey design vars
+svy_vars <- ewas_data %>%
+  select(SEQN, SDDSRVYR, SDMVPSU, SDMVSTRA, include)
+
+chems_weights_long <- left_join(chems_weights_long,
+                                svy_vars)
+
+# function for weighted stats
+desc_stats_wt <- function(chem_subset) {
+  
+  # remove missing weights
+  chem_subset <- chem_subset %>%
+    drop_na(weight_adj)
+  
+  # set up survey weighting
+  chem_subset_svy <- svydesign(ids = ~SDMVPSU, 
+                               strata = ~SDMVSTRA,
+                               weights = ~weight_adj,
+                               nest = TRUE,
+                               data = chem_subset)
+  
+  # subset to included participants
+  chem_subset_svy_incl <- subset(chem_subset_svy,
+                                 include == 1)
+  
+  # summary stats
+  unwt_n <- chem_subset %>%
+    filter(include == 1) %>%
+    drop_na(chem_value) %>%
+    nrow()
+  wt_mean <- svymean(~chem_value, design = chem_subset_svy_incl, na.rm = T)[1]
+  wt_sd <- sqrt(svyvar(~chem_value, design = chem_subset_svy_incl, na.rm = T))[1]
+  wt_geom_mean <- exp(svymean(~log(chem_value), design = chem_subset_svy_incl, na.rm = T))[1]
+  wt_geom_sd <- exp(sqrt(svyvar(~log(chem_value), design = chem_subset_svy_incl, na.rm = T)))[1]
+  unwt_min <- min((chem_subset %>% filter(include == 1))$chem_value, na.rm = T)
+  wt_p25 <- svyquantile(~chem_value, design = chem_subset_svy_incl, quantiles = 0.25)$chem_value[1]
+  wt_med <- svyquantile(~chem_value, design = chem_subset_svy_incl, quantiles = 0.5)$chem_value[1]
+  wt_p75 <- svyquantile(~chem_value, design = chem_subset_svy_incl, quantiles = 0.75)$chem_value[1]
+  unwt_max <- max((chem_subset %>% filter(include == 1))$chem_value, na.rm = T)
+  
+  tbl_stats <- bind_cols(chem_name = unique(chem_subset$chem_name),
+                         unwt_n = unwt_n,
+                         wt_mean = wt_mean,
+                         wt_sd = wt_sd,
+                         wt_geom_mean = wt_geom_mean,
+                         wt_geom_sd = wt_geom_sd,
+                         unwt_min = unwt_min,
+                         wt_p25 = wt_p25,
+                         wt_med = wt_med,
+                         wt_p75 = wt_p75,
+                         unwt_max = unwt_max)
+  
+  return(tbl_stats)
+  
+}
+
+# generate desc stats
+chem_desc_weighted <- chems_weights_long %>%
+  group_by(chem_name) %>%
+  do(desc_stats_wt(.))
+
+# merge chem dictionary info for more detail
+chem_desc_weighted <- left_join(chem_desc_weighted,
+                                dictionary,
+                                join_by(chem_name == variable_codename_use,
+                                        unwt_n == n_measures)) %>%
+  select(-c('unique_cycles', 'comment_codename_use', 'weight_variable')) 
+
+# reorganize columns
+chem_desc_weighted <- chem_desc_weighted %>%
+  relocate(variable_description_use, .after = chem_name) %>%
+  relocate(chemical_family, .after = pct_above_lod) %>%
+  relocate(unwt_n, .after = unwt_max)
+
+# save
+write_csv(chem_desc_weighted, file = 'Output Cog ExWAS/Chem descriptive stats weighted Jul 9 2024.csv')
+
+```
+
+# Chemical descriptives - unweighted
+```{r}
+
+# reduce chems file to included participants and chems
+included_seqns <- ewas_data %>%
+  filter(include == 1) %>%
+  pull(SEQN)
+
+chems_for_unwt <- chems %>%
+  filter(SEQN %in% included_seqns) %>%
+  select(SEQN, SDDSRVYR, all_of(chem_list))
+
+# summary stats table
+chem_desc <- chems_for_unwt %>%
+  pivot_longer(cols = all_of(chem_list),
+               values_to = 'measure',
+               names_to = 'chem_name') %>%
+  drop_na(measure) %>%
+  group_by(chem_name) %>%
+  summarize(n = n(),
+            mean = mean(measure), 
+            sd = sd(measure), 
+            geometric_mean = exp(mean(log(measure))),
+            geometric_sd = exp(sd(log(measure))),
+            min = min(measure), 
+            p25 = quantile(measure, prob = 0.25),
+            med = median(measure),
+            p75 = quantile(measure, prob = 0.75),
+            max = max(measure))
+
+# merge chem dictionary info for more detail
+chem_desc <- left_join(chem_desc,
+                       dictionary,
+                       join_by(chem_name == variable_codename_use,
+                               n == n_measures)) %>%
+  select(-comment_codename_use, -unique_cycles) 
+
+# reorganize columns
+chem_desc <- chem_desc %>%
+  relocate(variable_description_use, .after = chem_name) %>%
+  relocate(chemical_family, .after = pct_above_lod) %>%
+  relocate(n, .after = max)
+  
+# save
+#write_csv(chem_desc, file = 'Output Cog ExWAS/Chem descriptive stats May 15 2024.csv')
+
+```
+
+# Imputation summary
+```{r}
+# list of variables that I imputed
+vars_to_impute <- c('INDFMPIR', 'DMDEDUC2', 'URXUCR', 'BMXBMI', 'BMXWAIST', 'LBXCOT', 'DSST', 
+                    'smk_status', 'total_seafood_score', 'alc_month_freq', 'ins_status', 
+                    'HOQ065', 'ad_foodsec', 'employed')
+                    
+
+# pull included participants only
+included <- ewas_data %>%
+  filter(include == 1)
+
+# create a table of the missing Ns (for included participants only)
+missings <- as.data.frame(sapply(included, function(x) sum(is.na(x)))) %>%
+  filter(rownames(.) %in% vars_to_impute) %>%
+  rownames_to_column(var = 'variable')
+
+# rename N column
+colnames(missings) <- c('variable', 'n_missing')
+
+# add column for imputation method used
+# I'm pulling this info manually from the imputation code file
+
+missings$variable
+
+missings$imp_method <- c('Predictive mean modeling', 'Proportional odds modeling', 'Predictive mean modeling', 
+                         'Predictive mean modeling', 'Predictive mean modeling', 'Predictive mean modeling', 
+                         'Predictive mean modeling', 'Polytomous logistic regression', 'Predictive mean modeling', 
+                         'Predictive mean modeling', 'Polytomous logistic regression', 'Polytomous logistic regression', 
+                         'Proportional odds model', 'Logistic regression')
+
+# add name of variable
+missings$description <- get_label(ewas_data %>% select(all_of(vars_to_impute)))
+
+# clean up some of these
+missings$description[1] <- 'Poverty income ratio (PIR)'
+missings$description[2] <- 'Education level'
+missings$description[7] <- 'DSST score'
+missings$description[12] <- 'Housing tenure'
+missings$description[13] <- 'Food security level'
+
+# make gt table
+missings_gt <- missings %>%
+  select(-variable) %>%
+  relocate(description, .before = n_missing) %>%
+  gt() %>%
+  cols_label(description = 'Variable',
+             n_missing = 'N missing',
+             imp_method = 'Imputation method') %>%
+  tab_style(style = cell_text(weight = 'bold'), 
+            locations = cells_column_labels()) %>%
+  tab_style(style = cell_text(align = 'center'), 
+          locations = cells_column_labels()) %>%
+  cols_align(align = 'left')
+
+missings_gt
+
+#gtsave(missings_gt, filename = 'Output Cog ExWAS/Imputation info table May 10 2024.docx')
+
+# overall % with at least one missing var
+n_miss <- included %>%
+  mutate(educ_m = is.na(DMDEDUC2),
+         creat_m = is.na(URXUCR),
+         waist_m = is.na(BMXWAIST),
+         cot_m = is.na(LBXCOT),
+         dsst_m = is.na(DSST),
+         smk_m = is.na(smk_status),
+         seafood_m = is.na(total_seafood_score),
+         alc_m = is.na(alc_month_freq),
+         any_missing = case_when(is.na(DMDEDUC2) | is.na(URXUCR) | is.na(BMXWAIST) | is.na(LBXCOT) | is.na(DSST) |
+                                   is.na(smk_status) |is.na(total_seafood_score) |is.na(alc_month_freq) ~ 1,
+                                 .default = 0)) %>%
+  select(educ_m, creat_m, waist_m, cot_m, dsst_m, smk_m, seafood_m, alc_m, any_missing)
+
+table(n_miss$any_missing, useNA = 'always')
+
+n_miss %>%
+  filter(dsst_m == F) %>%
+  count(any_missing)
+
+```
+
+# Included vs excluded
+Jul 8: restrict this table to age 60+ only
+```{r}
+
+incl_excl_grp <- tbl1_data %>%
+  filter(RIDAGEYR >= 60)
+  # N = 5466
+  
+incl_excl_unwt <- tbl_summary(data = incl_excl_grp, 
+                            by = 'include', 
+                            include = c(DSST, RIDAGEYR, RIAGENDR, RIDRETH1, hs_educ, smk_status, LBXCOT, alc4, 
+                                        BMXWAIST, URXUCR, total_seafood_grp, normal_kidney, SDDSRVYR),
+                            label = c(DSST ~ 'Digit Symbol Substitution Test (DSST)',
+                                      RIDAGEYR ~ 'Age (years)',
+                                      RIAGENDR ~ 'Sex',
+                                      RIDRETH1 ~ 'Race/ethnicity',
+                                      hs_educ ~ 'Education',
+                                      smk_status ~ 'Smoking status',
+                                      LBXCOT ~ 'Serum cotinine (ng/mL)',
+                                      alc4 ~ 'Alcohol consumption',
+                                      BMXWAIST ~ 'Waist circumference (cm)',
+                                      URXUCR ~ 'Urinary creatinine (mg/dL)',
+                                      total_seafood_grp ~ 'Fish and seafood consumption in past 30 days',
+                                      normal_kidney ~ 'Estimated glomerular filtration rate (eGFR; ml/min/1.73 m2)',
+                                      SDDSRVYR ~ 'NHANES cycle'),
+                            missing_text = 'Missing',
+                            statistic = list(all_continuous() ~ "{mean} ({sd})",
+                                             all_categorical() ~ "{p}%"),
+                            digits = list(all_continuous() ~ c(2, 2),
+                                          all_categorical() ~ 2)) %>%
+  add_overall() %>%
+  add_p(list(all_continuous() ~ 't.test',
+             all_categorical() ~ 'chisq.test')) %>%
+  bold_labels() %>%
+  modify_header(label = '**Variable**',
+                stat_0 = '**Overall (N = 5,466)**',
+                stat_1 = '**Excluded (N = 484)**',
+                stat_2 = '**Included (N = 4,982)**') %>%
+  modify_caption('Table X. Unweighted descriptive statistics of excluded vs. included participants aged 60 years and older, National Health and Nutrition Examination Survey (NHANES) 1999-2000, 2011-2012, and 2013-2014 (N = 5,466).')
+
+incl_excl_unwt
+# need unweighted table to pull the N missing
+
+# weighted
+incl_excl_wt_grp <- subset(tbl1_wt_data,
+                           RIDAGEYR >= 60)
+
+incl_excl_wt <- tbl_svysummary(data = incl_excl_wt_grp, 
+                            by = 'include', 
+                            include = c(DSST, RIDAGEYR, RIAGENDR, RIDRETH1, hs_educ, smk_status, LBXCOT, alc4, 
+                                        BMXWAIST, URXUCR, total_seafood_grp, normal_kidney, SDDSRVYR),
+                            label = c(RIDAGEYR ~ 'Age (years)',
+                                      RIAGENDR ~ 'Sex',
+                                      RIDRETH1 ~ 'Race/ethnicity',
+                                      hs_educ ~ 'Education',
+                                      DSST ~ 'Digit Symbol Substitution Test (DSST)',
+                                      smk_status ~ 'Smoking status',
+                                      LBXCOT ~ 'Serum cotinine (ng/mL)',
+                                      alc4 ~ 'Alcohol consumption',
+                                      BMXWAIST ~ 'Waist circumference (cm)',
+                                      URXUCR ~ 'Urinary creatinine (mg/dL)',
+                                      total_seafood_grp ~ 'Fish and seafood consumption in past 30 days',
+                                      normal_kidney ~ 'Estimated glomerular filtration rate (eGFR; ml/min/1.73 m2)',
+                                      SDDSRVYR ~ 'NHANES cycle'),
+                            missing_text = 'Missing',
+                            statistic = list(all_continuous() ~ "{mean} ({sd})",
+                                             all_categorical() ~ "{p}%"),
+                            digits = list(all_continuous() ~ c(2, 2),
+                                          all_categorical() ~ 2)) %>%
+  add_overall() %>%
+  add_p(list(all_continuous() ~ 'svy.t.test',
+             all_categorical() ~ 'svy.chisq.test')) %>%
+  bold_labels() %>%
+  modify_header(label = '**Variable**',
+                stat_0 = '**Overall (N = 5,466)**',
+                stat_1 = '**Excluded (N = 484)**',
+                stat_2 = '**Included (N = 4,982)**') %>%
+  modify_caption('Table X. Weighted descriptive statistics of excluded vs. included participants aged 60 years and older, National Health and Nutrition Examination Survey (NHANES) 1999-2000, 2011-2012, and 2013-2014 (N = 5,466).')
+
+incl_excl_wt
+
+
+incl_excl_unwt %>%
+  as_flex_table() %>%
+  save_as_docx(path = 'Output Cog ExWAS/Cog ExWAS unweighted descriptive stats incl excl 60plus Jul 8 2024.docx')
+
+incl_excl_wt %>%
+  as_flex_table() %>%
+  save_as_docx(path = 'Output Cog ExWAS/Cog ExWAS weighted descriptive stats incl excl 60plus Jul 8 2024.docx')
+
+```
+
+
+
