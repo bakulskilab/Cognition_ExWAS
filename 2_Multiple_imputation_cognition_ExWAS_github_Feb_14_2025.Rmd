@@ -1,0 +1,229 @@
+---
+title: "Multiple imputation"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+Purpose: run multiple imputation with chained equations (MICE) to prepare data for cognition ExWAS models
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(haven)
+library(sjlabelled)
+library(mice)
+```
+
+# Load cleaned data
+```{r}
+cognition_ewas_to_impute <- readRDS('Data/cognition_ewas_to_impute.RDS')
+dim(cognition_ewas_to_impute) # 29896    31
+
+```
+
+# Prep data for imputation
+```{r}
+# TO IMPUTE - cognitive outcome (DSST), covariates: education (DMDEDUC2), smoking (smk_status), cotinine (LBXCOT),
+# fish/seafood consumption (total_seafood_score), alcohol (alc_month_freq), BMI (BMXBMI), waist circumference (BMXWAIST), 
+# creatinine (URXUCR), income (INDFMPIR), insurance (ins_status), housing tenure (HOQ065), 
+# food insecurity (ad_foodsec), employment (employed)
+
+# create a copy of cotinine LBXCOT - to use an unimputed version as an exposure and an imputed version as a covariate
+cognition_ewas_to_impute <- cognition_ewas_to_impute %>%
+  mutate(LBXCOT_imp = LBXCOT)
+
+# define list of variables to impute
+vars_to_impute <- c('INDFMPIR', 'DMDEDUC2', 'ins_status', 'HOQ065', 'ad_foodsec', 'employed', 
+                    'smk_status', 'LBXCOT_imp', 'URXUCR', 'DSST', 'total_seafood_score',
+                    'alc_month_freq', 'BMXBMI', 'BMXWAIST')
+
+# check missings in included participants
+included <- cognition_ewas_to_impute %>%
+  filter(include == 1)
+
+# summarize missing Ns for each variable (for included participants only)
+missings <- as.data.frame(sapply(included, function(x) sum(is.na(x)))) %>%
+  filter(rownames(.) %in% vars_to_impute)
+
+# convert to factors for imputation - in full dataset
+cognition_ewas_to_impute <- cognition_ewas_to_impute %>%
+  as_label(smk_status, ins_status, ad_foodsec, employed,
+           keep.labels = T) %>%
+  mutate(HOQ065 = factor(HOQ065,
+                         levels = c(1:3)),
+         DMDEDUC2 = factor(DMDEDUC2,
+                           levels = c(1:5)))
+
+table(cognition_ewas_to_impute$smk_status, useNA = 'always')
+table(cognition_ewas_to_impute$ins_status, useNA = 'always')
+table(cognition_ewas_to_impute$ad_foodsec, useNA = 'always')
+table(cognition_ewas_to_impute$employed, useNA = 'always')
+table(cognition_ewas_to_impute$HOQ065, useNA = 'always')
+table(cognition_ewas_to_impute$DMDEDUC2, useNA = 'always')
+
+```
+
+# Set up imputation inputs
+```{r}
+var_list <- colnames(cognition_ewas_to_impute)
+
+# variables to NOT use as predictors in the imputation
+excl_vars <- c('SEQN', 'SDMVPSU', 'SDMVSTRA', 'WTMEC2YR', 'WTMEC4YR', 'WTINT2YR', 'WTINT4YR', 
+               'VNEGFR', 'include', 'LBXCOT', 'hs_educ', 'total_seafood_grp', 'alc4', 'DMDEDUC3')
+
+remaining <- intersect(setdiff(var_list, excl_vars), setdiff(var_list, vars_to_impute))
+# 4 left after excl
+
+# set basic demographics with complete info to always use as predictors
+include_vars <- c('RIDAGEYR', 'RIAGENDR', 'RIDRETH1')
+
+# set up predictor matrix
+# quickpred will select predictors for each variable with missing data
+pred <- quickpred(cognition_ewas_to_impute,
+                  include = include_vars, # always use as predictors
+                  exclude = excl_vars) # never use as predictors
+
+# run mice with 0 iterations to pull list of methods
+imp <- mice(data = cognition_ewas_to_impute, 
+            predictorMatrix = pred,
+            maxit = 0)
+methods <- imp$method
+print(methods) # automatically assigned, empty if no missings
+
+# create list of all non-imputing variables
+not_imputing <- setdiff(var_list, vars_to_impute)
+
+# set methods of all non-imputing variables to empty
+methods[not_imputing] <- ""
+
+# set imputation methods by variable type
+# continuous
+cont <- c('INDFMPIR', 'LBXCOT_imp', 'URXUCR', 'DSST', 'total_seafood_score', 'alc_month_freq', 'BMXBMI', 'BMXWAIST')
+
+# unordered categorical
+unord <- c('ins_status', 'HOQ065', 'smk_status')
+
+# ordered categorical
+ord <- c('ad_foodsec', 'DMDEDUC2')
+
+#binomial
+bin <- 'employed'
+
+methods[cont] <- 'pmm' # predictive mean modeling
+methods[unord] <- 'polyreg' # polytomous logistic regression
+methods[ord] <- 'polr' # proportional odds model
+methods[bin] <- 'logreg' # logistic regression
+
+print(methods)
+rm(imp)
+
+# specify not to impute any data for excluded participants by creating a 'where' matrix
+# matrix of true/false for each data point: F = don't impute, T = impute
+
+# pull list of row numbers of participants to not impute (include == 0)
+no_imp <- cognition_ewas_to_impute %>%
+  mutate(n_row = row_number()) %>%
+  filter(include == 0) %>%
+  select(n_row, SEQN, include)
+dim(no_imp) # 24914     3 --> double check 29896-4982=24914
+
+# set the cells for those participants to FALSE in the 'where' matrix to pass to mice()
+where <- make.where(cognition_ewas_to_impute)
+where[no_imp$n_row, ] <- FALSE
+
+```
+
+# Run imputation
+```{r}
+# use the previously defined pred matrix, methods list, and where matrix
+imputed <- mice(cognition_ewas_to_impute, 
+                m = 5,
+                maxit = 5,
+                predictorMatrix = pred,
+                method = methods, 
+                where = where, # specifying to not impute for excluded participants
+                seed = 456) # set for reproducibility
+
+# check for logged events
+imputed$loggedEvents
+
+```
+
+# Clean up imputed dataset
+```{r}
+
+# turn into a long dataset, each imputation is stacked
+imputed_df <- complete(imputed, action = 'long')
+dim(imputed_df) # 149480     34 --> confirm, 29896*5=149480
+
+# confirm all missings were imputed for the included group
+summary((imputed_df %>% filter(include == 1))$INDFMPIR)
+summary((imputed_df %>% filter(include == 1))$LBXCOT_imp)
+summary((imputed_df %>% filter(include == 1))$URXUCR)
+summary((imputed_df %>% filter(include == 1))$DSST)
+summary((imputed_df %>% filter(include == 1))$total_seafood_score)
+summary((imputed_df %>% filter(include == 1))$alc_month_freq)
+summary((imputed_df %>% filter(include == 1))$BMXBMI)
+summary((imputed_df %>% filter(include == 1))$BMXWAIST)
+table((imputed_df %>% filter(include == 1))$DMDEDUC2, useNA = 'always')
+table((imputed_df %>% filter(include == 1))$ins_status, useNA = 'always')
+table((imputed_df %>% filter(include == 1))$HOQ065, useNA = 'always')
+table((imputed_df %>% filter(include == 1))$ad_foodsec, useNA = 'always')
+table((imputed_df %>% filter(include == 1))$employed, useNA = 'always')
+table((imputed_df %>% filter(include == 1))$smk_status, useNA = 'always')
+
+# recategorize education, seafood group, and alcohol consumption based on imputed continuous vars
+imputed_df <- imputed_df %>%
+  mutate(hs_educ = case_when(DMDEDUC2 %in% c(1, 2) ~ 0,
+                             DMDEDUC2 %in% c(3, 4, 5) ~ 1),
+         total_seafood_grp = case_when(total_seafood_score == 0 ~ '0',
+                                       total_seafood_score %in% c(1:3) ~ '1-3',
+                                       total_seafood_score >= 4 ~ '4+'),
+         alc4 = case_when(alc_month_freq <= 4 ~ 0,
+                          alc_month_freq > 4 ~ 1))
+
+table((imputed_df %>% filter(include == 1))$hs_educ, useNA = 'always')
+table((imputed_df %>% filter(include == 1))$total_seafood_grp, useNA = 'always')
+table((imputed_df %>% filter(include == 1))$alc4, useNA = 'always')
+
+# convert ins_status back to numeric
+imputed_df <- imputed_df %>%
+  mutate(ins_status = case_when(ins_status == 'Private insurance' ~ 0,
+                                ins_status == 'Government insurance' ~ 0.5,
+                                ins_status == 'No insurance' ~ 1))
+
+table((imputed_df %>% filter(include == 1))$ins_status, useNA = 'always')
+
+
+```
+
+# Add missing labels to imputed_df
+```{r}
+
+#get_label(imputed_df)
+
+# variable labels
+imputed_df <- imputed_df %>%
+  copy_labels(cognition_ewas_to_impute)
+
+get_label(imputed_df)
+# a few still blank
+
+imputed_df <- imputed_df %>%
+  var_labels(.imp = 'Imputation number',
+             .id = 'Imputation row number',
+             DMDEDUC2 = 'Education level - Adults 20+',
+             HOQ065 = 'Home owned, bought, rented, or other')
+
+```
+
+
+# Save imputed dataset
+```{r}
+
+saveRDS(imputed_df, file = 'Data/cognition_ewas_imputed.RDS')
+
+```
+
+
+

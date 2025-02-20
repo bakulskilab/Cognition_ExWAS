@@ -1,0 +1,573 @@
+---
+title: "Cognition ExWAS run models"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+Purpose: run all cognition ExWAS models
+
+Models: survey-weighted linear regression models for the association between each chemical exposure and DSST
+
+Main model: adjusted for age, sex, race/ethnicity, education, survey cycle, fish consumption, smoking, cotinine, creatinine (if urinary measurement)
+
+Sensitivity analysis 1: restrict to participants with normal eGFR (>=60), main model covariates
+
+Sensitivity analysis 2: add adjustment for waist circumference and alcohol consumption
+
+Sensitivity analysis 3: dichotomize DSST at 25th percentile and run modified Poisson regression
+
+Sensitivity analysis 4: dichotomize DSST at 25th percentile and run modified Poisson regression; restricted to normal eGFR
+
+Sensitivity analysis 5: stratify by sex
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(sjlabelled)
+library(mitools)
+library(mice)
+library(survey)
+```
+
+# Load and prep data
+```{r}
+# imputed dataset
+imputed_data <- readRDS('Data/cognition_ewas_imputed.RDS')
+
+# chem dictionary
+use_these_chems <- read_csv('Data/use_these_chems.csv')
+
+chem_list <- use_these_chems$variable_codename_use
+
+# chem exposure dataset, filter to cycles 1, 7, 8, select included chems
+chems <- read_csv('Data/chemicals_clean.csv', na = '.') %>%
+  filter(SDDSRVYR %in% c(1, 7, 8)) %>%
+  select(SEQN, SDDSRVYR, all_of(chem_list))
+dim(chems) # 27210   149
+
+# correct urinary cadmium = 0 to NA (measurement error in NHANES)
+chems <- chems %>%
+  mutate(URXUCD = case_when(URXUCD == 0 ~ NA,
+                            .default = URXUCD))
+
+# survey weights, filter to cycles 1, 7, 8, select weights corresponding to included chems
+wts_list <- paste('WT_', chem_list, sep = '')
+
+weights <- read_csv('Data/weights_clean.csv', na = '.') %>%
+  filter(SDDSRVYR %in% c(1, 7, 8)) %>%
+  select(SEQN, SDDSRVYR, all_of(wts_list))
+dim(weights) # 29896   149
+
+# set vars as factors
+imputed_data <- imputed_data %>%
+  as_label(RIAGENDR, hs_educ) %>%
+  mutate(RIDRETH1 = relevel(factor(RIDRETH1,
+                                   levels = c(1:5),
+                                   labels = c('Mexican American',
+                                              'Other Hispanic',
+                                              'Non-Hispanic White',
+                                              'Non-Hispanic Black',
+                                              'Other Race')),
+                            ref = 'Non-Hispanic White')) %>% # set non hispanic white as reference group
+  mutate(cycle = case_when(SDDSRVYR == 1 ~ '1999-2000',
+                           SDDSRVYR == 7 ~ '2011-2012',
+                           SDDSRVYR == 8 ~ '2013-2014'))
+
+# check factors
+table(imputed_data$RIAGENDR)
+table(imputed_data$hs_educ)
+table(imputed_data$RIDRETH1)
+table(imputed_data$SDDSRVYR)
+table(imputed_data$cycle)
+table(imputed_data$smk_status)
+table(imputed_data$include)
+
+# load model functions
+source('Cog_ExWAS_model_functions_Sep_25_2024.R')
+
+```
+
+# Create cutoff at weighted 25th percentile for MCI
+```{r}
+# Create survey object
+imputed_data <- imputed_data %>%
+  mutate(adjusted_weights = (1/3)*WTMEC2YR)
+
+imp1 <- imputed_data %>%
+  filter(.imp == 1) %>%
+  drop_na(adjusted_weights) %>%
+  filter(adjusted_weights != 0)
+  
+imp2 <- imputed_data %>%
+  filter(.imp == 2) %>%
+  drop_na(adjusted_weights) %>%
+  filter(adjusted_weights != 0)
+  
+imp3 <- imputed_data %>%
+  filter(.imp == 3) %>%
+  drop_na(adjusted_weights) %>%
+  filter(adjusted_weights != 0)
+  
+imp4 <- imputed_data %>%
+  filter(.imp == 4) %>%
+  drop_na(adjusted_weights) %>%
+  filter(adjusted_weights != 0)
+  
+imp5 <- imputed_data %>%
+  filter(.imp == 5) %>%
+  drop_na(adjusted_weights) %>%
+  filter(adjusted_weights != 0)
+  
+imp_list <- imputationList(list(imp1, imp2, imp3, imp4, imp5))
+
+svydata <- svydesign(ids = ~SDMVPSU, 
+                     strata = ~SDMVSTRA,
+                     weights = ~adjusted_weights,
+                     nest = TRUE,
+                     data = imp_list)
+  
+# subset to included participants
+svydata_subset <- subset(svydata,
+                         include == 1)
+
+# calculate 25th percentile
+with(svydata_subset, svyquantile(~DSST, 0.25))
+# 37
+
+mci_cutoff <- 37
+
+imputed_data <- imputed_data %>%
+  mutate(mild_cog_impair = case_when(include == 1 & DSST < mci_cutoff ~ 1,
+                                     include == 1 & DSST >= mci_cutoff ~ 0))
+
+table(imputed_data$mild_cog_impair, useNA = 'always')
+
+```
+
+# Run the models - main analysis
+```{r}
+cog_models <- chems %>%
+  pivot_longer(cols = all_of(chem_list),
+               values_to = 'chem_measure',
+               names_to = 'chem_name') %>%
+  group_by(chem_name) %>%
+  do(run_exwas_model(., weights, imputed_data)) %>%
+  ungroup()
+
+# clean up results
+# add full chem name and family
+var_info <- use_these_chems %>%
+  select(variable_codename_use, variable_description_use, chemical_family) %>%
+  rename(full_chem_name = variable_description_use)
+
+cog_models_clean <- left_join(cog_models,
+                              var_info,
+                              join_by(chem_name == variable_codename_use))
+
+# reorder columns for easier reading and rename p val
+cog_models_clean <- cog_models_clean %>%
+  relocate(full_chem_name, .after = chem_name) %>%
+  relocate(ci_lower, .after = estimate) %>%
+  relocate(ci_upper, .after = ci_lower) %>%
+  relocate(p.value, .after = ci_upper) %>%
+  rename(p_val_unadj = p.value)
+
+# calculate sample size per chem
+chem_n <- chems %>%
+  filter(SEQN %in% (imputed_data %>% filter(include == 1))$SEQN) %>%
+  pivot_longer(cols = all_of(chem_list),
+               values_to = 'chem_measure',
+               names_to = 'chem_name') %>%
+  drop_na(chem_measure) %>%
+  group_by(chem_name) %>%
+  summarize(n = n())
+
+cog_models_clean <- left_join(cog_models_clean,
+                              chem_n,
+                              join_by(chem_name)) %>%
+  relocate(n, .after = p_val_unadj)
+
+# false discovery rate correction for chem main effect
+cog_models_clean_chem_term <- cog_models_clean %>%
+  filter(term == 'scale(log2(chem_measure))') %>%
+  mutate(p_val_adj = p.adjust(p_val_unadj, method = 'fdr')) %>%
+  relocate(p_val_adj, .after = p_val_unadj)
+
+# merge adj p-values back into overall results
+cog_models_clean_adj <- left_join(cog_models_clean,
+                                  cog_models_clean_chem_term,
+                                  by = intersect(colnames(cog_models_clean), 
+                                                 colnames(cog_models_clean_chem_term))) %>%
+  relocate(p_val_adj, .after = p_val_unadj)
+
+
+```
+
+## save output
+```{r}
+
+write_csv(cog_models_clean_adj, file = 'Output Cog ExWAS/Cog ExWAS main analysis model output Jul 9 2024.csv')
+write_csv(cog_models_clean_chem_term, file = 'Output Cog ExWAS/Cog ExWAS main analysis model output chem term Jul 9 2024.csv')
+
+```
+
+# Sensitivity analysis: normal eGFR subset
+```{r}
+
+summary((imputed_data %>% filter(include == 1))$VNEGFR)
+
+# create indicator for eGFR >= 60
+imputed_data <- imputed_data %>%
+  mutate(egfr_grp = case_when(include == 1 & VNEGFR >= 60 ~ 1,
+                              .default = 0))
+
+table(imputed_data$egfr_grp, useNA = 'always')
+# 17965/5=3593
+
+cog_models_egfr <- chems %>%
+  pivot_longer(cols = all_of(chem_list),
+               values_to = 'chem_measure',
+               names_to = 'chem_name') %>%
+  group_by(chem_name) %>%
+  do(run_exwas_model_normal_egfr(., weights, imputed_data)) %>%
+  ungroup()
+
+# clean up results
+# add full chem name and family
+cog_models_egfr_clean <- left_join(cog_models_egfr,
+                                   var_info,
+                                   join_by(chem_name == variable_codename_use))
+
+# reorder columns for easier reading and rename p val
+cog_models_egfr_clean <- cog_models_egfr_clean %>%
+  relocate(full_chem_name, .after = chem_name) %>%
+  relocate(ci_lower, .after = estimate) %>%
+  relocate(ci_upper, .after = ci_lower) %>%
+  relocate(p.value, .after = ci_upper) %>%
+  rename(p_val_unadj = p.value)
+
+# add sample size per chem
+chem_n_egfr <- chems %>%
+  filter(SEQN %in% (imputed_data %>% filter(egfr_grp == 1))$SEQN) %>%
+  pivot_longer(cols = all_of(chem_list),
+               values_to = 'chem_measure',
+               names_to = 'chem_name') %>%
+  drop_na(chem_measure) %>%
+  group_by(chem_name) %>%
+  summarize(n = n())
+
+cog_models_egfr_clean <- left_join(cog_models_egfr_clean,
+                                   chem_n_egfr,
+                                   join_by(chem_name)) %>%
+  relocate(n, .after = p_val_unadj)
+
+# false discovery rate correction for chem main effect
+cog_models_egfr_clean_chem_term <- cog_models_egfr_clean %>%
+  filter(term == 'scale(log2(chem_measure))') %>%
+  mutate(p_val_adj = p.adjust(p_val_unadj, method = 'fdr')) %>%
+  relocate(p_val_adj, .after = p_val_unadj)
+
+# merge adj p-values back into overall results
+cog_models_egfr_clean_adj <- left_join(cog_models_egfr_clean,
+                                       cog_models_egfr_clean_chem_term,
+                                       by = intersect(colnames(cog_models_egfr_clean), 
+                                                      colnames(cog_models_egfr_clean_chem_term))) %>%
+  relocate(p_val_adj, .after = p_val_unadj)
+
+```
+
+## save output
+```{r}
+
+write_csv(cog_models_egfr_clean_adj, file = 'Output Cog ExWAS/Cog ExWAS normal eGFR model output Jul 9 2024.csv')
+write_csv(cog_models_egfr_clean_chem_term, file = 'Output Cog ExWAS/Cog ExWAS normal eGFR model output chem term Jul 9 2024.csv')
+
+```
+
+# Sensitivity analysis: add waist circumference and alcohol consumption
+```{r}
+
+cog_models_lifestyle <- chems %>%
+  pivot_longer(cols = all_of(chem_list),
+               values_to = 'chem_measure',
+               names_to = 'chem_name') %>%
+  group_by(chem_name) %>%
+  do(run_exwas_model_lifestyle(., weights, imputed_data)) %>%
+  ungroup()
+
+# clean up results
+# add full chem name and family
+cog_models_lifestyle_clean <- left_join(cog_models_lifestyle,
+                                        var_info,
+                                        join_by(chem_name == variable_codename_use))
+
+# reorder columns for easier reading and rename p val
+cog_models_lifestyle_clean <- cog_models_lifestyle_clean %>%
+  relocate(full_chem_name, .after = chem_name) %>%
+  relocate(ci_lower, .after = estimate) %>%
+  relocate(ci_upper, .after = ci_lower) %>%
+  relocate(p.value, .after = ci_upper) %>%
+  rename(p_val_unadj = p.value)
+
+# add sample size per chem - will be same as main analysis
+cog_models_lifestyle_clean <- left_join(cog_models_lifestyle_clean,
+                                        chem_n,
+                                        join_by(chem_name)) %>%
+  relocate(n, .after = p_val_unadj)
+
+# false discovery rate correction for chem main effect
+cog_models_lifestyle_clean_chem_term <- cog_models_lifestyle_clean %>%
+  filter(term == 'scale(log2(chem_measure))') %>%
+  mutate(p_val_adj = p.adjust(p_val_unadj, method = 'fdr')) %>%
+  relocate(p_val_adj, .after = p_val_unadj)
+
+# merge adj p-values back into overall results
+cog_models_lifestyle_clean_adj <- left_join(cog_models_lifestyle_clean,
+                                       cog_models_lifestyle_clean_chem_term,
+                                       by = intersect(colnames(cog_models_lifestyle_clean),
+                                                      colnames(cog_models_lifestyle_clean_chem_term))) %>%
+  relocate(p_val_adj, .after = p_val_unadj)
+
+```
+
+## save output
+```{r}
+
+write_csv(cog_models_lifestyle_clean_adj, file = 'Output Cog ExWAS/Cog ExWAS lifestyle model output Jul 9 2024.csv')
+write_csv(cog_models_lifestyle_clean_chem_term, file = 'Output Cog ExWAS/Cog ExWAS lifestyle model output chem term Jul 9 2024.csv')
+
+```
+
+# Sensitivity analysis: binary cognition outcome
+```{r}
+
+cog_models_poisson <- chems %>%
+  pivot_longer(cols = all_of(chem_list),
+               values_to = 'chem_measure',
+               names_to = 'chem_name') %>%
+  group_by(chem_name) %>%
+  do(run_exwas_model_poisson(., weights, imputed_data)) %>%
+  ungroup()
+
+# clean up results
+# add full chem name and family
+cog_models_poisson_clean <- left_join(cog_models_poisson,
+                                      var_info,
+                                      join_by(chem_name == variable_codename_use))
+
+# reorder columns for easier reading and rename p val
+cog_models_poisson_clean <- cog_models_poisson_clean %>%
+  relocate(full_chem_name, .after = chem_name) %>%
+  relocate(ci_lower, .after = estimate) %>%
+  relocate(ci_upper, .after = ci_lower) %>%
+  relocate(p.value, .after = ci_upper) %>%
+  rename(p_val_unadj = p.value)
+
+# add sample size per chem - will be same as main analysis
+cog_models_poisson_clean <- left_join(cog_models_poisson_clean,
+                                      chem_n,
+                                      join_by(chem_name)) %>%
+  relocate(n, .after = p_val_unadj)
+
+# false discovery rate correction for chem main effect
+cog_models_poisson_clean_chem_term <- cog_models_poisson_clean %>%
+  filter(term == 'scale(log2(chem_measure))') %>%
+  mutate(p_val_adj = p.adjust(p_val_unadj, method = 'fdr')) %>%
+  relocate(p_val_adj, .after = p_val_unadj)
+
+# merge adj p-values back into overall results
+cog_models_poisson_clean_adj <- left_join(cog_models_poisson_clean,
+                                       cog_models_poisson_clean_chem_term,
+                                       by = intersect(colnames(cog_models_poisson_clean),
+                                                      colnames(cog_models_poisson_clean_chem_term))) %>%
+  relocate(p_val_adj, .after = p_val_unadj)
+
+```
+
+## save output
+```{r}
+
+write_csv(cog_models_poisson_clean_adj, file = 'Output Cog ExWAS/Cog ExWAS poisson model output Nov 4 2024.csv')
+write_csv(cog_models_poisson_clean_chem_term, file = 'Output Cog ExWAS/Cog ExWAS poisson model output chem term Nov 4 2024.csv')
+
+```
+
+# Sensitivity analysis: binary cognition outcome, normal eGFR
+```{r}
+
+cog_models_poisson_egfr <- chems %>%
+  pivot_longer(cols = all_of(chem_list),
+               values_to = 'chem_measure',
+               names_to = 'chem_name') %>%
+  group_by(chem_name) %>%
+  do(run_exwas_model_poisson_egfr(., weights, imputed_data)) %>%
+  ungroup()
+
+# clean up results
+# add full chem name and family
+cog_models_poisson_egfr_clean <- left_join(cog_models_poisson_egfr,
+                                      var_info,
+                                      join_by(chem_name == variable_codename_use))
+
+# reorder columns for easier reading and rename p val
+cog_models_poisson_egfr_clean <- cog_models_poisson_egfr_clean %>%
+  relocate(full_chem_name, .after = chem_name) %>%
+  relocate(ci_lower, .after = estimate) %>%
+  relocate(ci_upper, .after = ci_lower) %>%
+  relocate(p.value, .after = ci_upper) %>%
+  rename(p_val_unadj = p.value)
+
+# add sample size per chem - will be same as main egfr analysis
+cog_models_poisson_egfr_clean <- left_join(cog_models_poisson_egfr_clean,
+                                      chem_n_egfr,
+                                      join_by(chem_name)) %>%
+  relocate(n, .after = p_val_unadj)
+
+# false discovery rate correction for chem main effect
+cog_models_poisson_egfr_clean_chem_term <- cog_models_poisson_egfr_clean %>%
+  filter(term == 'scale(log2(chem_measure))') %>%
+  mutate(p_val_adj = p.adjust(p_val_unadj, method = 'fdr')) %>%
+  relocate(p_val_adj, .after = p_val_unadj)
+
+# merge adj p-values back into overall results
+cog_models_poisson_egfr_clean_adj <- left_join(cog_models_poisson_egfr_clean,
+                                       cog_models_poisson_egfr_clean_chem_term,
+                                       by = intersect(colnames(cog_models_poisson_egfr_clean),
+                                                      colnames(cog_models_poisson_egfr_clean_chem_term))) %>%
+  relocate(p_val_adj, .after = p_val_unadj)
+
+```
+
+## save output
+```{r}
+
+write_csv(cog_models_poisson_egfr_clean_adj, file = 'Output Cog ExWAS/Cog ExWAS poisson normal eGFR model output Nov 4 2024.csv')
+write_csv(cog_models_poisson_egfr_clean_chem_term, file = 'Output Cog ExWAS/Cog ExWAS poisson normal eGFR model output chem term Nov 4 2024.csv')
+
+```
+
+# Sensitivity analysis: stratify by sex
+```{r}
+# male
+cog_models_male <- chems %>%
+  pivot_longer(cols = all_of(chem_list),
+               values_to = 'chem_measure',
+               names_to = 'chem_name') %>%
+  group_by(chem_name) %>%
+  do(run_exwas_model_males(., weights, imputed_data)) %>%
+  ungroup()
+
+# clean up results
+# add full chem name and family
+cog_models_male_clean <- left_join(cog_models_male,
+                                   var_info,
+                                   join_by(chem_name == variable_codename_use))
+
+# reorder columns for easier reading and rename p val
+cog_models_male_clean <- cog_models_male_clean %>%
+  relocate(full_chem_name, .after = chem_name) %>%
+  relocate(ci_lower, .after = estimate) %>%
+  relocate(ci_upper, .after = ci_lower) %>%
+  relocate(p.value, .after = ci_upper) %>%
+  rename(p_val_unadj = p.value)
+
+# add sample size per chem
+chem_n_male <- chems %>%
+  filter(SEQN %in% (imputed_data %>% filter(include == 1 & RIAGENDR == 'Male'))$SEQN) %>%
+  pivot_longer(cols = all_of(chem_list),
+               values_to = 'chem_measure',
+               names_to = 'chem_name') %>%
+  drop_na(chem_measure) %>%
+  group_by(chem_name) %>%
+  summarize(n = n())
+
+cog_models_male_clean <- left_join(cog_models_male_clean,
+                                   chem_n_male,
+                                   join_by(chem_name)) %>%
+  relocate(n, .after = p_val_unadj)
+
+# false discovery rate correction for chem main effect
+cog_models_male_clean_chem_term <- cog_models_male_clean %>%
+  filter(term == 'scale(log2(chem_measure))') %>%
+  mutate(p_val_adj = p.adjust(p_val_unadj, method = 'fdr')) %>%
+  relocate(p_val_adj, .after = p_val_unadj)
+
+# merge adj p-values back into overall results
+cog_models_male_clean_adj <- left_join(cog_models_male_clean,
+                                       cog_models_male_clean_chem_term,
+                                       by = intersect(colnames(cog_models_male_clean), 
+                                                      colnames(cog_models_male_clean_chem_term))) %>%
+  relocate(p_val_adj, .after = p_val_unadj)
+
+
+
+# female
+cog_models_female <- chems %>%
+  pivot_longer(cols = all_of(chem_list),
+               values_to = 'chem_measure',
+               names_to = 'chem_name') %>%
+  group_by(chem_name) %>%
+  do(run_exwas_model_females(., weights, imputed_data)) %>%
+  ungroup()
+
+# clean up results
+# add full chem name and family
+cog_models_female_clean <- left_join(cog_models_female,
+                                     var_info,
+                                     join_by(chem_name == variable_codename_use))
+
+# reorder columns for easier reading and rename p val
+cog_models_female_clean <- cog_models_female_clean %>%
+  relocate(full_chem_name, .after = chem_name) %>%
+  relocate(ci_lower, .after = estimate) %>%
+  relocate(ci_upper, .after = ci_lower) %>%
+  relocate(p.value, .after = ci_upper) %>%
+  rename(p_val_unadj = p.value)
+
+# calculate sample size per chem
+chem_n_female <- chems %>%
+  filter(SEQN %in% (imputed_data %>% filter(include == 1 & RIAGENDR == 'Female'))$SEQN) %>%
+  pivot_longer(cols = all_of(chem_list),
+               values_to = 'chem_measure',
+               names_to = 'chem_name') %>%
+  drop_na(chem_measure) %>%
+  group_by(chem_name) %>%
+  summarize(n = n())
+
+cog_models_female_clean <- left_join(cog_models_female_clean,
+                                     chem_n_female,
+                                     join_by(chem_name)) %>%
+  relocate(n, .after = p_val_unadj)
+
+# false discovery rate correction for chem main effect
+cog_models_female_clean_chem_term <- cog_models_female_clean %>%
+  filter(term == 'scale(log2(chem_measure))') %>%
+  mutate(p_val_adj = p.adjust(p_val_unadj, method = 'fdr')) %>%
+  relocate(p_val_adj, .after = p_val_unadj)
+
+# merge adj p-values back into overall results
+cog_models_female_clean_adj <- left_join(cog_models_female_clean,
+                                         cog_models_female_clean_chem_term,
+                                         by = intersect(colnames(cog_models_female_clean), 
+                                                       colnames(cog_models_female_clean_chem_term))) %>%
+  relocate(p_val_adj, .after = p_val_unadj)
+
+```
+
+## save output
+```{r}
+# combine to one file
+cog_models_by_sex_chem_term <- bind_rows(male = cog_models_male_clean_chem_term,
+                                         female = cog_models_female_clean_chem_term,
+                                         .id = 'sex') %>%
+  arrange(chem_name)
+
+write_csv(cog_models_by_sex_chem_term, file = 'Output Cog ExWAS/Cog ExWAS sex stratified output chem term Oct 25 2024.csv')
+
+
+```
+
+
+
+
+
