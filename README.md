@@ -10,7 +10,7 @@ Original NHANES datasets are available at: https://wwwn.cdc.gov/nchs/nhanes/cont
 
 ## Citation
 
-## Abstract
+Middleton LYM, Walker E, Cockell S, et al. Exposome-wide association study of cognition among older adults in the National Health and Nutrition Examination Survey. Exposome. 2025;5(1):osaf002. [doi:10.1093/exposome/osaf002](https://doi.org/10.1093/exposome/osaf002)
 
 ## File descriptions
 
@@ -20,10 +20,10 @@ Original NHANES datasets are available at: https://wwwn.cdc.gov/nchs/nhanes/cont
 
 3_Cognition_ExWAS_descriptive_tables - create descriptive tables
 
-4_Chemical_supplemental_figures - create descriptive figures
+4_Cognition_ExWAS_models - run generalized linear models
 
-5_Cognition_ExWAS_models - run generalized linear models
+5_Cognition_ExWAS_volcano_plots - create volcano plots of results
 
-6_Cognition_ExWAS_volcano_plots - create volcano plots of results
+6_Chemical_exposure_figures - create descriptive figures
 
-Cog_ExWAS_model_functions - functions necessary to run models in code 5
+Cog_ExWAS_model_functions - functions necessary to run models in code file 4
